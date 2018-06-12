@@ -94,26 +94,30 @@ class Curveball(Optimizer):
         ''' Hessian Vector Product:
             Effectively d_z = hvp(buf) + Jacobian '''
 
-        grads_model_parts = [grad(out, model_params, create_graph=True)[0] for out in output]
-        grads_model = torch.stack(grads_model_parts) 
+        #grads_model_parts = [grad(out, model_params, create_graph=True)[0] for out in output]
+        #grads_model = torch.stack(grads_model_parts) 
+        jacobian_model = torch.stack(
+                [grad(output[:, i], model_params, create_graph=True, retain_graph=True)[0] for i in range(output.size(1))], dim=-1)
+
         grad_loss = grad(loss, output, create_graph=True, retain_graph=True)[0]
         #hessian_parts = [grad(grad_loss_component, model_params, retain_graph=True)[0] for grad_loss_component in grad_loss]
-        hessian_parts = [grad(grad_loss_component, output, retain_graph=True)[0] for grad_loss_component in grad_loss]
-        hessian_loss = torch.stack(hessian_parts) 
-        print("grads_model: ", grads_model)
+        #hessian_parts = [grad(grad_loss_component, output, retain_graph=True)[0] for grad_loss_component in grad_loss]
+        hessian_loss = torch.stack([grad(grad_loss[:, i], output, create_graph=True, retain_graph=True)[0] for i in range(output.size(1))], dim=-1)[0]
+        #hessian_loss = torch.stack(hessian_parts) 
+        print("jacobian_model: ", jacobian_model)
         print("grads_loss: ", grad_loss)
         print("hessian_loss: ", hessian_loss)
-        print("grads_model.t: ", grads_model.t())
+        print("jacobian_model.t: ", jacobian_model.t())
         print("z: ", z)
         z_var = torch.autograd.Variable(z).view(-1,1)
-        d_z = hessian_loss.mm(grads_model.t().mm(z_var))
+        d_z = hessian_loss.mm(jacobian_model.t().mm(z_var))
         print("d_z: ", d_z)
-        d_z = grads_model.mm(d_z + grad_loss.view(-1,1))
+        d_z = jacobian_model.mm(d_z + grad_loss.view(-1,1))
         print("d_z #2 :", d_z)
         d_z = d_z + param_lambda * z_var
         print("d_z #3 :", d_z)
         try:
-            self.B, self.momentum = self.autotune(z_var, d_z, hessian_loss, grads_model, grad_loss)
+            self.B, self.momentum = self.autotune(z_var, d_z, hessian_loss, jacobian_model, grad_loss)
         except Exception as ex:
             print(ex)
             pass
