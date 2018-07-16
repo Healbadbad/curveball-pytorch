@@ -57,7 +57,7 @@ class Curveball(Optimizer):
         if nesterov and (momentum <= 0 or dampening != 0):
             raise ValueError("Nesterov momentum requires a momentum and zero dampening")
         #TODO: Change to use their interface
-        self.B = 0.1
+        self.B = 0.001
         self.momentum = momentum
         self.grads = {}
         super(Curveball, self).__init__(params, defaults)
@@ -110,6 +110,8 @@ class Curveball(Optimizer):
 
         gs = torch.autograd.grad(ys, xs, grad_outputs=ws, create_graph=True, retain_graph=True, allow_unused=True)
         print("gs: ", gs)
+        print("ws: ", ws)
+        print("vs: ", vs)
         
         re = torch.autograd.grad(gs, ws, grad_outputs=vs, create_graph=True, retain_graph=True, allow_unused=True)
         print("re: ", re)
@@ -138,13 +140,16 @@ class Curveball(Optimizer):
 
         #grad_model = grad(output, model_params, create_graph=True, retain_graph=True)[0]
         #grad_loss = grad(loss, output, create_graph=True, retain_graph=True)[0]
+        print("---- Delta Z ----:")
         print("model params: ", model_params)
         print("model params grad: ", model_params.grad)
         output_var = torch.tensor(output, requires_grad=True)
         grad_loss = torch.tensor(output_grad.view(-1,1), requires_grad=True)
         grad_model = model_params.grad.data.view(-1,1)
         z_var = torch.autograd.Variable(z).view(-1,1)
-        Jmz = self.Rop(output, model_params, z_var)[0].view(-1,1)
+        print("z: ", z)
+        print("z_var: ", z_var)
+        Jmz = self.Rop(output, model_params, z)[0].view(-1,1)
         print("Jmz from Rop: ", Jmz)
 
         #hessian_loss = torch.stack(hessian_parts) 
@@ -155,12 +160,14 @@ class Curveball(Optimizer):
         print("grad_loss size: ", grad_loss.size())
         print("grad_model: ", grad_model)
         print("grad_model.t: ", grad_model.t())
-        print("z: ", z)
-        print("z_var: ", z_var)
+        print(grad_loss.t()[:, 0])
 
         # May be able to compute Hl more efficiently?
-        hessian_loss = torch.stack([grad(grad_loss.t()[:, i], output, create_graph=True, retain_graph=True)[0] for i in range(output.size(1))], dim=-1)[0]
+
+        hessian_loss = torch.stack([grad(grad_loss.t()[:, i], output, create_graph=True, retain_graph=True)[0].view(-1) for i in range(output.size(0))], dim=-1)
         print("hessian_loss: ", hessian_loss)
+        print("Hessian shae: ", hessian_loss.size())
+        print("Jmz shape: ", Jmz.size())
         #HlJmz = torch.tensor(hessian_loss.mm(Jmz) + grad_loss, requires_grad=True)
         HlJmz = hessian_loss.mm(Jmz)
         HlJmzJl = HlJmz + grad_loss
@@ -177,6 +184,7 @@ class Curveball(Optimizer):
         #gs = grad(output_var, model_params.view(-1,1), grad_outputs=HlJmz, create_graph=True, retain_graph=True)   
         print("model_params new view ", model_params.view(1,-1))
         #gs = self.Lop(output, model_params.view(1,-1), HlJmz.view(1,-1))
+        #Hhatz = self.Lop(output_var, model_params, HlJmz.view(-1))[0].view(-1,1) + param_lambda * z_var
         Hhatz = self.Lop(output_var, model_params, HlJmz.view(-1))[0].view(-1,1) + param_lambda * z_var
         gs = self.Lop(output_var, model_params, HlJmzJl.view(-1))[0].view(-1,1)
         print("gs: ", gs)
@@ -208,16 +216,22 @@ class Curveball(Optimizer):
         #print("d_z #2 :", d_z)
         #d_z = d_z + param_lambda * z_var
         #print("d_z #3 :", d_z)
+        #Jz = self.Lop(loss, model_params, z)[0].view(-1,1) 
+        Jtz = model_params.grad.t() @ z
+        #Jdz = self.Lop(loss, model_params, d_z)[0].view(-1,1) 
+        Jtdz = model_params.grad.t() @ d_z
         # Autotune needs Hz, Hdz
         try:
-            self.B, self.momentum = self.autotune(z_var, d_z, Hhatz, Hhatdz, model_params.grad.view(1,-1))
+            #self.B, self.momentum = self.autotune(z_var, d_z, Hhatz, Hhatdz, model_params.grad.view(1,-1))
+            self.B, self.momentum = self.autotune(z_var, d_z, Hhatz, Hhatdz, Jtz, Jtdz)
         except Exception as ex:
             print(ex)
             pass
         print("B,momentum are: ", self.B, self.momentum)
         return d_z.data
 
-    def autotune(self, z, dz, Hhatz, Hhatdz, Jt):
+    #def autotune(self, z, dz, Hhatz, Hhatdz, Jt):
+    def autotune(self, z, dz, Hhatz, Hhatdz, Jz, Jdz):
 
         print("---- Autotuning ----")
         print("z: ", z)
@@ -234,8 +248,11 @@ class Curveball(Optimizer):
         part1 = torch.Tensor([[-dz.t().mm(Hhatdz), -z.t().mm(Hhatdz)],
                                [-z.t().mm(Hhatdz), -z.t().mm(Hhatz)]] )
         invp1 = part1.inverse()
-        part2 = torch.tensor([[Jt.mm(dz)],[Jt.mm(z)]])
+        print("here?")
+        #part2 = torch.tensor([[Jt.mm(dz)],[Jt.mm(z)]])
+        part2 = torch.tensor([[Jdz],[Jz]])
         print("part1: ", part1)
+        print("invp1: ", invp1)
         print("part2: ", part2)
         answers = invp1.mm(part2)
         print("answers: ", answers)
@@ -286,7 +303,7 @@ class Curveball(Optimizer):
                         print("d_buf:", d_buf)
                         print("-B * d_buf:", -self.B * d_buf)
                         buf.mul_(self.momentum)
-                        buf.add_(-self.B * d_buf.view(-1))
+                        buf.add_(-self.B * d_buf)
                     else:
                         d_buf = self.delta_z_no_split(loss, p, buf)
                         print("buf:", buf)
@@ -301,10 +318,9 @@ class Curveball(Optimizer):
                         d_buf = self.delta_z(output, output_grad, loss, p, buf)
                         print("buf: ", buf)
                         print("-B * d_buf:", -self.B * d_buf)
-                        print("-B * d_buf:", -self.B * d_buf.view(-1))
-                        print("newbuf: ", buf.add(-self.B * d_buf.view(-1)))
+                        print("newbuf: ", buf.add(-self.B * d_buf))
                         buf.mul_(self.momentum)
-                        buf.add_(1 - dampening, -self.B * d_buf.view(-1))
+                        buf.add_(1 - dampening, -self.B * d_buf)
                     else:
                         buf.mul_(self.momentum)
                         d_buf = self.delta_z_no_split(loss, p, buf)
